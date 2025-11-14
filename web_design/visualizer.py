@@ -24,7 +24,7 @@ class AccidentVisualizer:
         'ACCIDENT.RoadSurfaceState': {'type': '범주형', 'label': '노면상태'},
         'ACCIDENT.WeatherState': {'type': '범주형', 'label': '기상상태'},
         'ACCIDENT.RoadForm': {'type': '범주형', 'label': '도로형태'},
-        'REGION.RegionName': {'type': '범주형', 'label': '지역명 (구)'},
+        'REGION.RegionName': {'type': '범주형', 'label': '지역명 (시군구)'},
         'DRIVER.Role': {'type': '범주형', 'label': '운전자 구분 (가해/피해)'},
         'DRIVER.VehicleType': {'type': '범주형', 'label': '운전자 차종'},
         'DRIVER.Gender': {'type': '범주형', 'label': '운전자 성별'},
@@ -69,6 +69,7 @@ class AccidentVisualizer:
     def _build_query_components(self, var1: str, var2: str, agg_func: str = None):
         """
         [내부 함수] 두 '내부 컬럼명'을 기반으로 SQL 쿼리 구성요소를 생성합니다.
+        (복잡한 쿼리는 각 차트 함수에서 직접 빌드합니다)
         """
         table1, col1 = var1.split('.')
         table2, col2 = var2.split('.')
@@ -86,7 +87,10 @@ class AccidentVisualizer:
             if col2 == '(사고건수)':
                 select_col2 = "COUNT(ACCIDENT.AccidentID)"
             else:
-                select_col2 = f"{agg_func}({table2}.{col2})"
+                # `col2`가 실제 컬럼명인지 확인 (예: 'DeathCount')
+                safe_col2 = col2.replace("(", "").replace(")", "") # (사고건수) 방지
+                select_col2 = f"{agg_func}({table2}.{safe_col2})"
+                
             select_clause = f"SELECT {table1}.{col1}, {select_col2} AS Value"
             group_by_clause = f"GROUP BY {table1}.{col1}"
             order_by_clause = f"ORDER BY {table1}.{col1}"
@@ -119,13 +123,13 @@ class AccidentVisualizer:
             if (type1 == '범주형' and type2 == '수치형'):
                 return self._create_bar_chart(var1, var2, label1, label2)
             if (type1 == '수치형' and type2 == '범주형'):
-                return self._create_bar_chart(var2, var1, label2, label1)
+                return self._create_bar_chart(var2, var1, label2, label1) # 순서 변경
 
             # Case 2: 시간형 vs 수치형 -> 라인 차트
             if (type1 == '시간형' and type2 == '수치형'):
                 return self._create_line_chart(var1, var2, label1, label2)
             if (type1 == '수치형' and type2 == '시간형'):
-                return self._create_line_chart(var2, var1, label2, label1)
+                return self._create_line_chart(var2, var1, label2, label1) # 순서 변경
 
             # Case 3: 범주형 vs 범주형 -> 그룹형 막대 차트
             if (type1 == '범주형' and type2 == '범주형'):
@@ -137,7 +141,7 @@ class AccidentVisualizer:
             if (type1 == '수치형' and type2 == '수치형'):
                 if '사고건수' in [label1, label2]:
                     return None, "이 시각화는 '사고건수'를 지원하지 않습니다."
-                return self._create_bubble_chart(var1, var2, label1, label2) # 함수 변경
+                return self._create_bubble_chart(var1, var2, label1, label2)
 
             # Case 5: 시간형 vs 범주형 -> 다중 라인 차트
             if (type1 == '시간형' and type2 == '범주형'):
@@ -147,7 +151,7 @@ class AccidentVisualizer:
             if (type1 == '범주형' and type2 == '시간형'):
                 num_label = '사고건수'
                 num_var = self._get_internal_name(num_label)
-                return self._create_multi_line_chart(var2, var1, num_var, label2, label1, num_label)
+                return self._create_multi_line_chart(var2, var1, num_var, label2, label1, num_label) # 순서 변경
 
             return None, "선택된 조합에 대한 시각화를 생성할 수 없습니다."
 
@@ -164,7 +168,7 @@ class AccidentVisualizer:
 
     # --- Case 1: 수직 막대 차트 (범주형 vs 수치형) ---
     def _create_bar_chart(self, cat_var: str, num_var: str, cat_label: str, num_label: str):
-        title = f"{cat_label} 별 {num_label} (상위 20개)"
+        title = f"'{cat_label}' 별 '{num_label}' (상위 20개)"
         agg_func = "COUNT" if '(사고건수)' in num_var else "SUM"
         
         sel, frm, jn, grp, _ = self._build_query_components(cat_var, num_var, agg_func)
@@ -178,20 +182,27 @@ class AccidentVisualizer:
                      y='Value',
                      title=title,
                      labels={col1_name: cat_label, 'Value': num_label}) # 한글 레이블 적용
-        fig.update_xaxes(type='category')
+        fig.update_xaxes(type='category') # X축을 범주형으로 강제
         return fig, title
 
     # --- Case 2: 라인 차트 (시간형 vs 수치형) ---
     def _create_line_chart(self, time_var: str, num_var: str, time_label: str, num_label: str):
-        title = f"{time_label} 별 {num_label} 추이"
+        title = f"'{time_label}' 별 '{num_label}' 추이"
         agg_func = "COUNT" if '(사고건수)' in num_var else "SUM"
         
         sel, frm, jn, grp, odr = self._build_query_components(time_var, num_var, agg_func)
         query = f"{sel} {frm} {jn} {grp} {odr}"
 
         df = self._fetch_data(query)
-        col1_name = time_var.split('.')[1]
+        col1_name = time_var.split('.')[1] # 'OccurYearMonth'
         
+        # [시간축 버그 수정] '202201' 문자열을 datetime 객체로 변환
+        try:
+            df[col1_name] = pd.to_datetime(df[col1_name], format='%Y%m')
+        except Exception as e:
+            logging.warning(f"시간 변환 오류: {e}. 'OccurYearMonth' 형식이 'YYYYMM'이 아닐 수 있습니다.")
+            pass # 변환 실패 시에도 일단 진행
+
         fig = px.line(df, 
                       x=col1_name,
                       y='Value', 
@@ -203,7 +214,7 @@ class AccidentVisualizer:
     # --- Case 3: 그룹형 막대 차트 (범주형 vs 범주형) ---
     def _create_grouped_bar_chart(self, var1: str, var2: str, num_var: str, 
                                   label1: str, label2: str, num_label: str):
-        title = f"{label1}와 {label2} 별 {num_label} (그룹형 막대 차트)"
+        title = f"'{label1}'와 '{label2}' 별 '{num_label}' (그룹형 막대 차트)"
         
         table1, col1 = var1.split('.') # X축
         table2, col2 = var2.split('.') # Color (범례)
@@ -236,7 +247,7 @@ class AccidentVisualizer:
 
     # --- Case 4: 버블 차트 (수치형 vs 수치형) ---
     def _create_bubble_chart(self, var1: str, var2: str, label1: str, label2: str):
-        title = f"{label1}와 {label2} 조합별 '사고건수' (버블 차트)"
+        title = f"'{label1}'와 '{label2}' 조합별 '사고건수' (버블 차트)"
         
         table1, col1 = var1.split('.') # X축
         table2, col2 = var2.split('.') # Y축
@@ -283,7 +294,7 @@ class AccidentVisualizer:
     # --- Case 5: 다중 라인 차트 (시간형 vs 범주형) ---
     def _create_multi_line_chart(self, time_var: str, cat_var: str, num_var: str, 
                                  time_label: str, cat_label: str, num_label: str):
-        title = f"{time_label}에 따른 '{cat_label}'별 '{num_label}' 추이"
+        title = f"'{time_label}'에 따른 '{cat_label}'별 '{num_label}' 추이"
         
         table1, col1 = time_var.split('.') # X축
         table2, col2 = cat_var.split('.') # Color
@@ -306,9 +317,17 @@ class AccidentVisualizer:
         query = f"{select_clause} {from_clause} {join_clause} {group_by_clause} {order_by_clause}"
         
         df = self._fetch_data(query)
-        
+        col1_name = time_var.split('.')[1] # 'OccurYearMonth'
+
+        # [시간축 버그 수정] '202201' 문자열을 datetime 객체로 변환
+        try:
+            df[col1_name] = pd.to_datetime(df[col1_name], format='%Y%m')
+        except Exception as e:
+            logging.warning(f"시간 변환 오류: {e}. 'OccurYearMonth' 형식이 'YYYYMM'이 아닐 수 있습니다.")
+            pass # 변환 실패 시에도 일단 진행
+
         fig = px.line(df, 
-                      x=col1,
+                      x=col1_name,
                       y='Value',
                       color=col2,
                       title=title,
